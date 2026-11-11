@@ -1,6 +1,8 @@
 """HTTP API used by the reviewer UI.  Run: uvicorn ledgerline.api:app --reload"""
 from __future__ import annotations
 
+import sqlite3
+
 from fastapi import Depends, FastAPI, Header, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -66,22 +68,67 @@ def approve_invoice(invoice_id: int, body: DecisionRequest, conn=Depends(get_con
     invoice = db.get_invoice(conn, invoice_id)
     if invoice is None:
         raise HTTPException(status_code=404, detail="Invoice not found")
-    conn.execute(
-        "INSERT INTO approvals (invoice_id, user_id, note) VALUES (?, ?, ?)", (invoice_id, body.user_id, body.note)
-    )
-    approvals = conn.execute("SELECT COUNT(*) FROM approvals WHERE invoice_id = ?", (invoice_id,)).fetchone()[0]
+
+    if invoice.get("document_type") == "credit_note":
+        raise HTTPException(status_code=400, detail="Credit notes cannot be approved for payment")
+
+    if "duplicate" in (invoice.get("review_reasons") or []):
+        raise HTTPException(status_code=400, detail="Invoices flagged as duplicate cannot be approved")
+
+    if invoice["status"] in ("approved", "rejected"):
+        raise HTTPException(status_code=400, detail=f"Invoice is already {invoice['status']}")
+
+    if invoice.get("needs_review") and not (body.note and body.note.strip()):
+        raise HTTPException(status_code=400, detail="A note is required when approving an invoice that needs review")
+
+    existing = conn.execute(
+        "SELECT id FROM approvals WHERE invoice_id = ? AND user_id = ?",
+        (invoice_id, body.user_id),
+    ).fetchone()
+    if existing:
+        raise HTTPException(status_code=400, detail=f"User {body.user_id} has already approved this invoice")
+
+    try:
+        conn.execute(
+            "INSERT INTO approvals (invoice_id, user_id, note) VALUES (?, ?, ?)",
+            (invoice_id, body.user_id, body.note.strip()),
+        )
+    except sqlite3.IntegrityError:
+        raise HTTPException(status_code=400, detail=f"User {body.user_id} has already approved this invoice")
+    distinct_approvals = conn.execute(
+        "SELECT COUNT(DISTINCT user_id) FROM approvals WHERE invoice_id = ?",
+        (invoice_id,),
+    ).fetchone()[0]
+
     status = invoice["status"]
-    if approvals >= invoice["required_approvals"]:
+    if distinct_approvals >= invoice["required_approvals"]:
         status = "approved"
         conn.execute("UPDATE invoices SET status = 'approved' WHERE id = ?", (invoice_id,))
-        conn.execute("INSERT INTO payments (invoice_id, amount) VALUES (?, ?)", (invoice_id, invoice["total"]))
+        conn.execute(
+            "INSERT OR IGNORE INTO payments (invoice_id, amount) VALUES (?, ?)",
+            (invoice_id, invoice["total"]),
+        )
     conn.commit()
-    return {"id": invoice_id, "approvals": approvals, "required_approvals": invoice["required_approvals"],
-            "status": status}
+    return {
+        "id": invoice_id,
+        "approvals": distinct_approvals,
+        "required_approvals": invoice["required_approvals"],
+        "status": status,
+    }
 
 
 @app.post("/api/invoices/{invoice_id}/reject")
 def reject_invoice(invoice_id: int, body: DecisionRequest, conn=Depends(get_conn)):
+    invoice = db.get_invoice(conn, invoice_id)
+    if invoice is None:
+        raise HTTPException(status_code=404, detail="Invoice not found")
+    if invoice["status"] in ("approved", "rejected"):
+        raise HTTPException(status_code=400, detail=f"Invoice is already {invoice['status']}")
+
+    conn.execute(
+        "INSERT INTO rejections (invoice_id, user_id, note) VALUES (?, ?, ?)",
+        (invoice_id, body.user_id, body.note.strip()),
+    )
     conn.execute("UPDATE invoices SET status = 'rejected' WHERE id = ?", (invoice_id,))
     conn.commit()
     return {"id": invoice_id, "status": "rejected"}
