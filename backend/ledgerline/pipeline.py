@@ -2,8 +2,10 @@
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 from dataclasses import asdict
+from decimal import Decimal
 
 from . import db
 from .extraction import extract
@@ -13,7 +15,22 @@ from .parsing import parse_amount, parse_date
 from .reference import ReferenceData
 from .validation import run_checks
 
-HIGH_VALUE_THRESHOLD = 500000  # invoices above this need two approvals
+HIGH_VALUE_THRESHOLD = Decimal("500000.00")  # AP_POLICY.md §4.1: invoices >= 5,00,000 need 2 approvals
+
+
+def compute_required_approvals(inv: Invoice) -> int:
+    # AP_POLICY.md §4.1:
+    # 1. Credit notes: 0, because they cannot be approved for payment.
+    # 2. Foreign-currency invoices: 2.
+    # 3. Invoices with a total of ₹5,00,000.00 or more: 2.
+    # 4. All other invoices: 1.
+    if inv.document_type == "credit_note":
+        return 0
+    if inv.currency and inv.currency.strip().upper() != "INR":
+        return 2
+    if inv.total is not None and Decimal(str(inv.total)) >= HIGH_VALUE_THRESHOLD:
+        return 2
+    return 1
 
 
 def normalize(data: dict) -> Invoice:
@@ -55,15 +72,52 @@ def process_document(
     org_id: str = "meridian",
     filename: str | None = None,
 ) -> dict:
-    data, responses = extract(raw_text, ref)
-    inv = normalize(data)
-    warnings = run_checks(conn, ref, inv)
+    responses = []
+    processing_error = False
+    try:
+        data, responses = extract(raw_text, ref)
+        inv = normalize(data)
+        # Check raw document clues for credit note if LLM misclassified
+        if inv.document_type != "credit_note" and (
+            re.search(r'(?i)"Typ"\s*:\s*"CRN"', raw_text) or re.search(r'(?i)\bcredit\s+note\b', raw_text)
+        ):
+            inv.document_type = "credit_note"
+    except Exception as exc:
+        processing_error = True
+        inv = Invoice(
+            document_type="invoice",
+            supplier_name=None,
+            supplier_gstin=None,
+            invoice_number=None,
+            invoice_date=None,
+            currency="INR",
+            subtotal=None,
+            cgst=0.0,
+            sgst=0.0,
+            igst=0.0,
+            round_off=0.0,
+            total=None,
+            bank_account=None,
+            ifsc=None,
+            po_number=None,
+            notes=f"Processing error: {exc}",
+            line_items=[],
+        )
+        data = {"requires_review": True, "review_reasons": ["processing_error"]}
 
-    # v0.3: the model applies the AP policy itself (it has the full policy text in its prompt).
-    needs_review = bool(data.get("requires_review", False))
-    review_reasons = list(data.get("review_reasons") or [])
-    required_approvals = 2 if (inv.total or 0) > HIGH_VALUE_THRESHOLD else 1
+    # Deterministic checks strictly enforce AP policy rules
+    deterministic_reasons = run_checks(conn, ref, inv, raw_text)
+    if processing_error and "processing_error" not in deterministic_reasons:
+        deterministic_reasons.insert(0, "processing_error")
+
+    # Preserve legitimate extraction uncertainty and model-flagged reasons
+    llm_reasons = [r for r in data.get("review_reasons") or [] if isinstance(r, str)]
+    review_reasons = list(dict.fromkeys(deterministic_reasons + llm_reasons))
+
+    needs_review = bool(review_reasons) or bool(data.get("requires_review", False))
+    required_approvals = compute_required_approvals(inv)
     status = "needs_review" if needs_review else "ready_for_approval"
+    warnings = deterministic_reasons
 
     cur = conn.execute(
         """INSERT INTO invoices (org_id, document_id, filename, raw_text, document_type, supplier_name,

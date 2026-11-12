@@ -44,11 +44,39 @@ def predict(args: argparse.Namespace) -> None:
     with open(args.output, "w", encoding="utf-8") as out:
         for path in documents:
             try:
-                invoice = process_document(conn, ref, path.read_text(encoding="utf-8"), path.stem,
-                                           filename=path.name)
-            except Exception as exc:  # keep the batch going
-                print(f"[skip] {path.name}: {exc}", file=sys.stderr)
-                continue
+                raw_text = path.read_text(encoding="utf-8")
+                invoice = process_document(conn, ref, raw_text, path.stem, filename=path.name)
+            except Exception as exc:  # never drop a document
+                print(f"[error] {path.name}: {exc}", file=sys.stderr)
+                invoice = {
+                    "document_id": path.stem,
+                    "document_type": "invoice",
+                    "supplier_name": None,
+                    "supplier_gstin": None,
+                    "invoice_number": None,
+                    "invoice_date": None,
+                    "currency": "INR",
+                    "bank_account": None,
+                    "ifsc": None,
+                    "po_number": None,
+                    "subtotal": None,
+                    "cgst": 0.0,
+                    "sgst": 0.0,
+                    "igst": 0.0,
+                    "round_off": 0.0,
+                    "total": None,
+                    "line_items": [],
+                    "needs_review": True,
+                    "review_reasons": ["processing_error"],
+                    "required_approvals": 1,
+                    "usage": {
+                        "llm_calls": 0,
+                        "input_tokens": 0,
+                        "output_tokens": 0,
+                        "cost_inr": 0.0,
+                        "latency_ms": 0,
+                    },
+                }
             out.write(json.dumps(to_contract(invoice), ensure_ascii=False) + "\n")
             written += 1
     print(f"wrote {written}/{len(documents)} predictions to {args.output}")
