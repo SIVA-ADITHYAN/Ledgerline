@@ -122,9 +122,35 @@ def check_suspicious_content(raw_text: str = "") -> list[str]:
 
 
 def check_bank_details(inv: Invoice, vendor: dict | None) -> list[str]:
-    if vendor and inv.ifsc and vendor.get("ifsc") and inv.ifsc != vendor["ifsc"]:
-        return ["bank_details_changed"]
-    return []
+    """Check if invoice bank details match approved vendor master (AP Policy §2.4).
+
+    - If the vendor is not found in vendor master, do not flag bank_details_changed.
+    - If the invoice does not state bank details, do not flag bank_details_changed.
+    - Digits-only normalization for account numbers, preserving leading zeros.
+    - Case-insensitive IFSC code comparison.
+    - Flags if either account number or IFSC has changed.
+    """
+    if not vendor:
+        return []
+
+    if not inv.bank_account and not inv.ifsc:
+        return []
+
+    reasons: list[str] = []
+
+    if inv.bank_account and vendor.get("bank_account"):
+        inv_acct_digits = re.sub(r"\D", "", str(inv.bank_account))
+        vendor_acct_digits = re.sub(r"\D", "", str(vendor["bank_account"]))
+        if inv_acct_digits != vendor_acct_digits:
+            reasons.append("bank_details_changed")
+
+    if inv.ifsc and vendor.get("ifsc"):
+        inv_ifsc = inv.ifsc.strip().upper()
+        vendor_ifsc = str(vendor["ifsc"]).strip().upper()
+        if inv_ifsc != vendor_ifsc:
+            reasons.append("bank_details_changed")
+
+    return list(dict.fromkeys(reasons))
 
 
 def run_checks(

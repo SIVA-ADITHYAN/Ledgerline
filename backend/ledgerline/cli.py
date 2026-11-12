@@ -47,7 +47,8 @@ def predict(args: argparse.Namespace) -> None:
                 raw_text = path.read_text(encoding="utf-8")
                 invoice = process_document(conn, ref, raw_text, path.stem, filename=path.name)
             except Exception as exc:  # never drop a document
-                print(f"[error] {path.name}: {exc}", file=sys.stderr)
+                safe_exc = re.sub(r"\b\d{5,18}\b", lambda m: ("*" * (len(m.group(0)) - 4)) + m.group(0)[-4:], str(exc))
+                print(f"[error] {path.name}: {safe_exc}", file=sys.stderr)
                 invoice = {
                     "document_id": path.stem,
                     "document_type": "invoice",

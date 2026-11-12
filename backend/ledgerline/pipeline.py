@@ -84,6 +84,7 @@ def process_document(
             inv.document_type = "credit_note"
     except Exception as exc:
         processing_error = True
+        safe_msg = re.sub(r"\b\d{5,18}\b", lambda m: ("*" * (len(m.group(0)) - 4)) + m.group(0)[-4:], str(exc))
         inv = Invoice(
             document_type="invoice",
             supplier_name=None,
@@ -100,7 +101,7 @@ def process_document(
             bank_account=None,
             ifsc=None,
             po_number=None,
-            notes=f"Processing error: {exc}",
+            notes=f"Processing error: {safe_msg}",
             line_items=[],
         )
         data = {"requires_review": True, "review_reasons": ["processing_error"]}
