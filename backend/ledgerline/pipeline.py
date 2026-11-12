@@ -107,7 +107,7 @@ def process_document(
         data = {"requires_review": True, "review_reasons": ["processing_error"]}
 
     # Deterministic checks strictly enforce AP policy rules
-    deterministic_reasons = run_checks(conn, ref, inv, raw_text)
+    deterministic_reasons = run_checks(conn, ref, inv, raw_text, document_id=document_id)
     if processing_error and "processing_error" not in deterministic_reasons:
         deterministic_reasons.insert(0, "processing_error")
 

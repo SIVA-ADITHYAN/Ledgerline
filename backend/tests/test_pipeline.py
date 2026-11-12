@@ -84,10 +84,13 @@ def test_routing_detects_suspicious_content(conn, ref, monkeypatch):
 
 
 def test_routing_preserves_multiple_validation_reasons(conn, ref, monkeypatch):
-    # Both invalid GSTIN and changed bank details
+    # Both tax type mismatch and changed bank details for a known vendor
     canned = dict(CANNED_EXTRACTION)
-    canned["supplier_gstin"] = "27AAKCS4821M"
+    canned["supplier_gstin"] = "27AAKCS4821M1ZW"
     canned["ifsc"] = "ZEPH9999999"
+    canned["cgst"] = "0.00"
+    canned["sgst"] = "0.00"
+    canned["igst"] = "3578.40"
     canned["requires_review"] = False
     canned["review_reasons"] = []
     client = FakeClient([json.dumps(canned)] * 2)
@@ -95,7 +98,7 @@ def test_routing_preserves_multiple_validation_reasons(conn, ref, monkeypatch):
 
     invoice = process_document(conn, ref, "INVOICE TEXT", "doc_multi")
     assert invoice["needs_review"] is True
-    assert "gstin_invalid" in invoice["review_reasons"]
+    assert "tax_type_mismatch" in invoice["review_reasons"]
     assert "bank_details_changed" in invoice["review_reasons"]
 
 
