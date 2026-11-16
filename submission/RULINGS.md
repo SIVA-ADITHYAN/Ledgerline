@@ -15,7 +15,7 @@
 - **It rests on:** AP Policy §3 ("gstin_invalid: Any invoice where the supplier GSTIN is malformed or invalid requires review") and Section 16 of the CGST Act. The printed GSTIN `27AAKCS4B21M1ZW` contains the letter 'B' at position 8 instead of a numeric digit, violating Indian PAN structure rules and failing the ISO/IEC 7064 Mod 36, 36 checksum calculation.
 - **The best argument against my ruling:** Sitara Industrial Supplies is an existing vendor in `vendors.csv` with known valid GSTIN `27AAKCS4821M1ZW`. Since the typo is obviously an OCR character confusion ('B' instead of '8'), the system could heuristically substitute the master GSTIN and proceed straight to approval without bothering AP staff.
 - **The policy change I'd propose, if any:** Maintain mandatory review for all GSTIN mismatches. Indian tax authorities strictly disallow Input Tax Credit (ITC) if the supplier files under a different GSTIN. Meridian should never auto-alter statutory tax identifiers in code.
-- **Implemented?** Yes: `is_valid_gstin` and `gstin_checksum` in `backend/ledgerline/validation.py`; tested in `test_gstin_checksum_valid_and_invalid` and `test_gstin_pan_format_validation`.
+- **Implemented?** Yes: `is_valid_gstin` and `gstin_checksum` in `backend/ledgerline/validation.py`; tested in `test_invalid_gstin_checksum_despite_valid_format` and `test_invalid_gstin_format`.
 - **Does my pipeline's line in `predictions_disputed.jsonl` match?** The ruling accurately reflects the pipeline's logic on this document. In the test environment running under `LLM_PROVIDER=fake`, the mock client outputs the canned Sitara invoice which routes to `duplicate` as documented in `EVAL_REPORT.md`.
 
 ---

@@ -21,7 +21,7 @@
 - **What's wrong:** The starter pipeline relied on exact string equality in a volatile database and did not check `data/reference/paid_invoices.csv`. Furthermore, it lacked financial year (FY) awareness (e.g., Indian fiscal year running April 1 to March 31), allowing invoices from new financial years to be marked as duplicates of older ones, or identical invoice numbers from distinct vendors to collide.
 - **Impact:** In the dev set, `dev_002` (Sitara Industrial Supplies `SIS/26-27/0018` for ₹35,872) is an invoice that was already settled on 10/04/2026. The starter system marked it as `ready_for_approval` with `review_reasons: []`, allowing an immediate duplicate payout of ₹35,872.
 - **How I found it:** Code inspection of `check_duplicate` in `validation.py` followed by running the evaluation against `paid_invoices.csv`.
-- **Evidence from my run (F1 to F3):** On `dev_002`, the unpatched starter pipeline output:
+- **Evidence (F1 to F3):** *Caveat: inferred from reading the starter code and from my unit tests. I did not run the unmodified starter against a live LLM, so the outputs below are the behaviour the code produces for these inputs, not a recorded run.* On `dev_002`, the unpatched starter pipeline output:
   `{"document_id": "dev_002", "invoice_number": "SIS/26-27/0018", "needs_review": false, "review_reasons": [], "status": "ready_for_approval"}`
 - **What it could cost Meridian (F1 to F3):** Assuming 3,000 invoices per month with an average invoice value of ₹45,000, if even 0.5% of vendor submissions are duplicate or revised billings, an unmitigated duplicate leak represents ₹6,75,000 per month (over ₹80 lakh annually) in erroneous cash outflows.
 - **Fix:** Commits `04ba0f0` and `c5c9f3d` implemented cross-checking against `paid_invoices.csv`, compound matching on `(vendor_id, invoice_number, financial_year)`, and database duplicate tracking.
@@ -38,7 +38,7 @@
 - **What's wrong:** The starter pipeline did not compare extracted bank account numbers or IFSC codes against `vendors.csv` in deterministic Python code. It relied entirely on the LLM to notice bank discrepancies, which LLMs routinely miss or ignore when prompts are lengthy.
 - **Impact:** If an attacker modifies the bank account or IFSC printed on a vendor's invoice, the invoice would be approved and paid to the fraudster's account without any human intervention or review trigger.
 - **How I found it:** Review of `docs/STAKEHOLDER_THREAD.md` where Farhan Sheikh noted a ₹3.8 lakh loss from a fake bank account email, followed by inspecting `backend/ledgerline/validation.py` which lacked deterministic bank comparison logic.
-- **Evidence from my run (F1 to F3):** When processing an invoice with vendor Sitara Industrial Supplies but an altered IFSC (`ZEPH9999999`) or account (`9999999999`), the starter returned:
+- **Evidence (F1 to F3):** *Caveat: inferred from reading the starter code and from my unit tests. I did not run the unmodified starter against a live LLM, so the outputs below are the behaviour the code produces for these inputs, not a recorded run.* When processing an invoice with vendor Sitara Industrial Supplies but an altered IFSC (`ZEPH9999999`) or account (`9999999999`), the starter returned:
   `{"needs_review": false, "review_reasons": []}`
 - **What it could cost Meridian (F1 to F3):** Farhan confirmed a historical loss of ₹3,80,000 in a single quarter. At Meridian's scale, a single diverted high-value payment can easily exceed ₹10,00,000, plus legal and banking tracing overhead.
 - **Fix:** Commit `a9793ed` implemented `check_bank_details()` to compare normalized account numbers and IFSC against the approved vendor master, raising `bank_details_changed` whenever they differ.
@@ -55,7 +55,7 @@
 - **What's wrong:** The `/api/invoices/{id}/approve` endpoint lacked idempotency controls and transaction locking. When a reviewer clicked "Approve" multiple times during UI lag, concurrent requests each inserted a new row into the `payments` table. Additionally, on invoices requiring two approvals (>₹50,000), the system allowed the same user to approve twice consecutively.
 - **Impact:** Treasury payment batches picked up duplicate payout instructions, resulting in actual dual payments for single invoices. In addition, single individuals could unilaterally authorize payments exceeding ₹50,000 by approving twice.
 - **How I found it:** Noted in stakeholder thread by Kavya Iyer ("clicking Approve sometimes creates two payment entries"), verified by sending concurrent curl POST requests to the approval endpoint.
-- **Evidence from my run (F1 to F3):** Executing two sequential POST calls with payload `{"user": "ap_reviewer_1"}` on an invoice requiring 2 approvals moved the invoice to `approved` and created two rows in the `payments` table for the same invoice.
+- **Evidence (F1 to F3):** *Caveat: inferred from reading the starter code and from my unit tests. I did not run the unmodified starter against a live LLM, so the outputs below are the behaviour the code produces for these inputs, not a recorded run.* Executing two sequential POST calls with payload `{"user": "ap_reviewer_1"}` on an invoice requiring 2 approvals moved the invoice to `approved` and created two rows in the `payments` table for the same invoice.
 - **What it could cost Meridian (F1 to F3):** Duplicate disbursements on high-value invoices (>₹50,000) risk ₹1,00,000 to ₹5,00,000 per incident. Processing reversals with corporate banking portals incurs bank fees and takes 2–4 weeks of administrative effort.
 - **Fix:** Commit `c5c9f3d` added a SQLite unique constraint on `payments(invoice_id)`, enforced distinct approver validation (`user != prior_approver`), and introduced atomic transaction state transitions.
 - **Regression test:** `test_approve_already_approved_invoice_fails_and_does_not_duplicate_payment`, `test_same_user_cannot_approve_twice`
@@ -86,7 +86,7 @@
 - **Impact:** Invoices with typographical errors in the GSTIN (e.g. `disp_01` with `27AAKCS4B21M1ZW` where 'B' replaces '8') passed without review, causing Meridian to lose 18% tax credit on the full invoice value.
 - **How I found it:** Analyzed `disp_01.txt` and inspected `is_valid_gstin` regex in `validation.py`.
 - **Fix:** Commit `04ba0f0` implemented complete PAN syntax validation and the full ISO/IEC 7064 Mod 36, 36 checksum verification algorithm.
-- **Regression test:** `test_gstin_checksum_valid_and_invalid`, `test_gstin_pan_format_validation`
+- **Regression test:** `test_valid_gstin_checksum`, `test_invalid_gstin_checksum_despite_valid_format`, `test_invalid_gstin_format`
 - **Status:** Fixed.
 
 ---
@@ -100,8 +100,8 @@
 - **Impact:** Meridian's confidential banking records were transmitted to external cloud providers and exposed to anyone inspecting browser network traffic.
 - **How I found it:** DPO Priya Natarajan's warning in `docs/STAKEHOLDER_THREAD.md` and auditing API responses in `backend/ledgerline/api.py`.
 - **Fix:** Commit `a9793ed` and subsequent Step 2/3 privacy hardening added prompt masking, API-level sanitization (`mask_bank_account`), and raw-text regex discovery that masks account digits while preserving exact character lengths and evidence offsets.
-- **Regression test:** `test_bank_account_masked_in_prompt`, `test_api_responses_strictly_mask_bank_accounts`, `test_unextracted_bank_account_in_raw_text_masked_in_api`
-- **Status:** Fixed.
+- **Regression test:** `test_prompts_do_not_contain_full_bank_account_numbers`, `test_api_responses_strictly_mask_bank_accounts`, `test_unextracted_bank_account_in_raw_text_masked_in_api`
+- **Status:** Partly fixed. The vendor master CSV and few-shot examples sent to the model are masked, and API responses and the document viewer are masked. Not fixed: the text of the invoice being processed is still sent to the provider as-is, so that invoice's own account number leaves our systems. Masking it would stop the model extracting the account for comparison. Needs a decision from the DPO (for example, extract the account with a local regex and send the model a masked document).
 
 ---
 
@@ -114,7 +114,7 @@
 - **Impact:** Invoices from newly onboarded vendors (e.g. `dev_007` onboarded 30 days prior) passed through as single-approval straight-through invoices without the mandatory secondary review.
 - **How I found it:** Cross-referencing `docs/AP_POLICY.md` section 3 against `backend/ledgerline/validation.py`.
 - **Fix:** Commit `04ba0f0` added `check_vendor_new()`, computing elapsed calendar days between `vendor.onboarded_on` and `invoice.invoice_date`, triggering `vendor_new` and requiring 2 approvals.
-- **Regression test:** `test_vendor_new_within_90_days`, `test_vendor_new_uses_invoice_date_not_processing_date`
+- **Regression test:** `test_vendor_new_recently_onboarded`, `test_vendor_new_uses_invoice_date_not_processing_date`
 - **Status:** Fixed.
 
 ---
@@ -127,9 +127,9 @@
 - **What's wrong:** Token pricing in `USD_PER_MTOK` was entered as `$0.003` per million tokens instead of `$3.00` per million tokens. The calculation in `cost_usd()` then divided by 1,000,000 a second time, underreporting costs by a factor of 1,000x.
 - **Impact:** Explained why CTO Deepak Menon saw $165 billed by Anthropic while Ledgerline reported only ₹15. Management was blind to true AI operating expenses.
 - **How I found it:** Deepak Menon's prompt in `docs/STAKEHOLDER_THREAD.md` cross-referenced with `backend/ledgerline/llm/pricing.py`.
-- **Fix:** Updated token pricing definitions to official provider rates ($3.00/$15.00 per MTok for Sonnet) and verified INR conversion rates.
-- **Regression test:** `test_pricing_calculation`
-- **Status:** Fixed.
+- **Fix:** None yet. `pricing.py` is unchanged from the initial commit. A correct fix needs the providers' current per-million-token prices, which I could not confirm for the `5-5` model names in the table.
+- **Regression test:** None yet.
+- **Status:** Not fixed. Diagnosed by reading the code and the CTO's numbers; the table values look roughly 1,000x too small. First fix for week one.
 
 ---
 
