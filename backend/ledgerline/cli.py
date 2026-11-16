@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 import tempfile
 from pathlib import Path
@@ -32,6 +33,8 @@ def to_contract(invoice: dict) -> dict:
     out["review_reasons"] = invoice["review_reasons"]
     out["required_approvals"] = invoice["required_approvals"]
     out["usage"] = invoice["usage"]
+    if "evidence" in invoice:
+        out["evidence"] = invoice["evidence"]
     return out
 
 
@@ -70,6 +73,7 @@ def predict(args: argparse.Namespace) -> None:
                     "needs_review": True,
                     "review_reasons": ["processing_error"],
                     "required_approvals": 1,
+                    "evidence": {},
                     "usage": {
                         "llm_calls": 0,
                         "input_tokens": 0,

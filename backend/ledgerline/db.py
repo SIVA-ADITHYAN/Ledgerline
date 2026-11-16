@@ -30,6 +30,7 @@ CREATE TABLE IF NOT EXISTS invoices (
     po_number TEXT,
     notes TEXT,
     line_items_json TEXT,
+    evidence_json TEXT,
     warnings_json TEXT,
     needs_review INTEGER NOT NULL DEFAULT 0,
     review_reasons_json TEXT,
@@ -76,6 +77,11 @@ def connect(path: str) -> sqlite3.Connection:
     conn = sqlite3.connect(path, check_same_thread=False)
     conn.row_factory = sqlite3.Row
     conn.executescript(SCHEMA)
+    # Safe migration: ensure evidence_json column exists on existing databases
+    columns = [row["name"] for row in conn.execute("PRAGMA table_info(invoices)").fetchall()]
+    if "evidence_json" not in columns:
+        conn.execute("ALTER TABLE invoices ADD COLUMN evidence_json TEXT")
+        conn.commit()
     return conn
 
 
@@ -86,6 +92,7 @@ def get_invoice(conn: sqlite3.Connection, invoice_id: int) -> dict | None:
     inv = dict(row)
     for col in ("line_items_json", "warnings_json", "review_reasons_json"):
         inv[col.removesuffix("_json")] = json.loads(inv.pop(col) or "[]")
+    inv["evidence"] = json.loads(inv.pop("evidence_json", None) or "{}")
     inv["needs_review"] = bool(inv["needs_review"])
     usage = conn.execute(
         "SELECT COUNT(*) AS calls, COALESCE(SUM(input_tokens), 0) AS input_tokens, "

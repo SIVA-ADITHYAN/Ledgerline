@@ -8,12 +8,13 @@ from dataclasses import asdict
 from decimal import Decimal
 
 from . import db
+from .evidence import extract_evidence
 from .extraction import extract
 from .llm.pricing import cost_usd
 from .models import Invoice, LineItem
 from .parsing import parse_amount, parse_date
 from .reference import ReferenceData
-from .validation import run_checks
+from .validation import build_review_reasons_detail, run_checks
 
 HIGH_VALUE_THRESHOLD = Decimal("500000.00")  # AP_POLICY.md §4.1: invoices >= 5,00,000 need 2 approvals
 
@@ -120,18 +121,24 @@ def process_document(
     status = "needs_review" if needs_review else "ready_for_approval"
     warnings = deterministic_reasons
 
+    # Part 4A: Extract exact source character offsets for fields
+    try:
+        evidence = extract_evidence(raw_text, {**data, **asdict(inv)})
+    except Exception:
+        evidence = {}
+
     cur = conn.execute(
         """INSERT INTO invoices (org_id, document_id, filename, raw_text, document_type, supplier_name,
                supplier_gstin, invoice_number, invoice_date, currency, subtotal, cgst, sgst, igst, round_off,
-               total, bank_account, ifsc, po_number, notes, line_items_json, warnings_json, needs_review,
+               total, bank_account, ifsc, po_number, notes, line_items_json, evidence_json, warnings_json, needs_review,
                review_reasons_json, required_approvals, status)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             org_id, document_id, filename, raw_text, inv.document_type, inv.supplier_name, inv.supplier_gstin,
             inv.invoice_number, inv.invoice_date.isoformat() if inv.invoice_date else None, inv.currency,
             inv.subtotal, inv.cgst, inv.sgst, inv.igst, inv.round_off, inv.total, inv.bank_account, inv.ifsc,
-            inv.po_number, inv.notes, json.dumps([asdict(i) for i in inv.line_items]), json.dumps(warnings),
-            int(needs_review), json.dumps(review_reasons), required_approvals, status,
+            inv.po_number, inv.notes, json.dumps([asdict(i) for i in inv.line_items]), json.dumps(evidence),
+            json.dumps(warnings), int(needs_review), json.dumps(review_reasons), required_approvals, status,
         ),
     )
     invoice_id = cur.lastrowid
@@ -143,4 +150,7 @@ def process_document(
              cost_usd(r.model, r.input_tokens, r.output_tokens), r.latency_ms),
         )
     conn.commit()
-    return db.get_invoice(conn, invoice_id)
+    invoice = db.get_invoice(conn, invoice_id)
+    if invoice is not None:
+        invoice["review_reasons_detail"] = build_review_reasons_detail(invoice, ref)
+    return invoice

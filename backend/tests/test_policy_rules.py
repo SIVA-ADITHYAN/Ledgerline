@@ -10,7 +10,9 @@ from ledgerline.reference import load_reference
 from ledgerline.validation import (
     check_credit_note,
     check_duplicate,
+    check_future_date,
     check_gstin,
+    check_line_items_arithmetic,
     check_tax_type,
     check_totals,
     check_vendor,
@@ -290,3 +292,39 @@ def test_totals_calculation_uses_decimal_precision():
         total=119.01,
     )
     assert check_totals(inv_over_tolerance) == ["totals_mismatch"]
+
+
+def test_line_item_arithmetic_flag_disabled(monkeypatch):
+    monkeypatch.delenv("LEDGERLINE_FLAG_CHECK_LINE_ITEM_TOTALS", raising=False)
+    # 4 * 3850 is 15400, but amount is 15950 (disp_05 case)
+    inv = make_inv(
+        line_items=[
+            LineItem(description="Plug Gauge", quantity=4, unit_price=3850.0, amount=15950.0)
+        ]
+    )
+    assert check_line_items_arithmetic(inv) == []
+
+
+def test_line_item_arithmetic_flag_enabled(monkeypatch):
+    monkeypatch.setenv("LEDGERLINE_FLAG_CHECK_LINE_ITEM_TOTALS", "1")
+    # 4 * 3850 is 15400, but amount is 15950 (disp_05 case)
+    inv = make_inv(
+        line_items=[
+            LineItem(description="Plug Gauge", quantity=4, unit_price=3850.0, amount=15950.0)
+        ]
+    )
+    assert check_line_items_arithmetic(inv) == ["line_item_math_error"]
+
+
+def test_future_date_flag_disabled(monkeypatch):
+    monkeypatch.delenv("LEDGERLINE_FLAG_CHECK_FUTURE_DATE", raising=False)
+    raw_email = "Date: Tue, 28 Apr 2026 12:05:00 +0530\nInvoice SCPL/26-27/011 dated 25/06/2026"
+    inv = make_inv(invoice_date=date(2026, 6, 25))
+    assert check_future_date(inv, raw_email) == []
+
+
+def test_future_date_flag_enabled(monkeypatch):
+    monkeypatch.setenv("LEDGERLINE_FLAG_CHECK_FUTURE_DATE", "1")
+    raw_email = "Date: Tue, 28 Apr 2026 12:05:00 +0530\nInvoice SCPL/26-27/011 dated 25/06/2026"
+    inv = make_inv(invoice_date=date(2026, 6, 25))
+    assert check_future_date(inv, raw_email) == ["future_dated_invoice"]

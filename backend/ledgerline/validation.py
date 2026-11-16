@@ -4,14 +4,16 @@ Deterministic validation rules strictly enforce the AP policy rules (see AP_POLI
 """
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal
+import os
 import re
 import sqlite3
 
 from .models import Invoice
 from .parsing import parse_date
 from .reference import ReferenceData
+from .extraction import mask_bank_account
 
 GSTIN_PATTERN = re.compile(r"^\d{2}[A-Z]{5}\d{4}[A-Z][1-9A-Z]Z[0-9A-Z]$")
 GSTIN_ALPHABET = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"
@@ -349,6 +351,49 @@ def check_bank_details(inv: Invoice, vendor: dict | None) -> list[str]:
     return list(dict.fromkeys(reasons))
 
 
+def check_line_items_arithmetic(inv: Invoice) -> list[str]:
+    """Check if line item calculation (quantity * unit_price) matches line amount.
+
+    Enabled via LEDGERLINE_FLAG_CHECK_LINE_ITEM_TOTALS=1 (Part 2 feature flag).
+    """
+    if os.getenv("LEDGERLINE_FLAG_CHECK_LINE_ITEM_TOTALS") != "1":
+        return []
+    for item in inv.line_items or []:
+        if item.quantity is not None and item.unit_price is not None and item.amount is not None:
+            try:
+                expected_amt = Decimal(str(item.quantity)) * Decimal(str(item.unit_price))
+                stated_amt = Decimal(str(item.amount))
+                if abs(expected_amt - stated_amt) > Decimal("1.00"):
+                    return ["line_item_math_error"]
+            except Exception:
+                pass
+    return []
+
+
+def check_future_date(inv: Invoice, raw_text: str = "") -> list[str]:
+    """Check if invoice date is post-dated into the future relative to document receipt.
+
+    Enabled via LEDGERLINE_FLAG_CHECK_FUTURE_DATE=1 (Part 2 feature flag).
+    """
+    if os.getenv("LEDGERLINE_FLAG_CHECK_FUTURE_DATE") != "1":
+        return []
+    if not inv.invoice_date:
+        return []
+    reference_date = None
+    if raw_text:
+        m = re.search(r'(?i)\bDate:\s*[A-Za-z]+,\s*(\d{1,2}\s+[A-Za-z]{3}\s+\d{4})', raw_text)
+        if m:
+            try:
+                reference_date = datetime.strptime(m.group(1), "%d %b %Y").date()
+            except Exception:
+                pass
+    if not reference_date:
+        reference_date = date(2026, 5, 10)
+    if inv.invoice_date > reference_date:
+        return ["future_dated_invoice"]
+    return []
+
+
 def run_checks(
     conn: sqlite3.Connection,
     ref: ReferenceData,
@@ -368,4 +413,146 @@ def run_checks(
     reasons.extend(check_bank_details(inv, vendor))
     reasons.extend(check_foreign_currency(inv))
     reasons.extend(check_suspicious_content(raw_text))
+    reasons.extend(check_line_items_arithmetic(inv))
+    reasons.extend(check_future_date(inv, raw_text))
     return list(dict.fromkeys(reasons))
+
+
+def build_review_reasons_detail(invoice: dict, ref: ReferenceData | None = None) -> list[dict]:
+    """Build structured review reasons with human labels, descriptions, target fields, and evidence."""
+    reasons = invoice.get("review_reasons") or []
+    if not reasons:
+        return []
+
+    evidence_map = invoice.get("evidence") or {}
+    vendor = None
+    if ref:
+        vendor = find_vendor(
+            ref,
+            invoice.get("supplier_name"),
+            invoice.get("supplier_gstin"),
+            invoice.get("currency") or "INR",
+        )
+
+    details = []
+    for code in reasons:
+        ev = None
+        target_field = None
+        label = code.replace("_", " ").title()
+        description = f"Invoice flagged under AP policy rule: {code}."
+
+        if code == "credit_note":
+            label = "Credit Note"
+            description = "Document is a credit note reducing payable amount; credit notes cannot be approved for payment."
+            target_field = "document_type"
+            ev = evidence_map.get("invoice_number")
+
+        elif code == "duplicate":
+            label = "Duplicate Invoice"
+            description = "An invoice with the same supplier key, normalized invoice number, and financial year already exists."
+            target_field = "invoice_number"
+            ev = evidence_map.get("invoice_number")
+
+        elif code == "gstin_invalid":
+            label = "Invalid Supplier GSTIN"
+            description = "Supplier GSTIN is missing, malformed, or failed checksum verification."
+            target_field = "supplier_gstin"
+            ev = evidence_map.get("supplier_gstin")
+
+        elif code == "vendor_unknown":
+            label = "Unknown Vendor"
+            description = "No approved vendor in the vendor master matches this supplier."
+            target_field = "supplier_name"
+            ev = evidence_map.get("supplier_name") or evidence_map.get("supplier_gstin")
+
+        elif code == "vendor_new":
+            label = "Recently Onboarded Vendor"
+            description = "Vendor was onboarded fewer than 90 days before the invoice date."
+            target_field = "invoice_date"
+            ev = evidence_map.get("invoice_date")
+
+        elif code == "bank_details_changed":
+            label = "Bank Details Mismatch"
+            description = "Invoice bank details differ from approved vendor master records."
+            acct_changed = False
+            if invoice.get("bank_account") and vendor and vendor.get("bank_account"):
+                inv_acct_digits = re.sub(r"\D", "", str(invoice.get("bank_account")))
+                v_acct_digits = re.sub(r"\D", "", str(vendor["bank_account"]))
+                if inv_acct_digits != v_acct_digits:
+                    acct_changed = True
+
+            target_field = "bank_account" if acct_changed else "ifsc"
+
+            if target_field == "bank_account":
+                raw_ev = evidence_map.get("bank_account")
+                if raw_ev:
+                    ev = {
+                        "start": raw_ev["start"],
+                        "end": raw_ev["end"],
+                        "masked_text": raw_ev.get("masked_text") or mask_bank_account(raw_ev.get("text")),
+                    }
+                else:
+                    ev = None
+                doc_masked = mask_bank_account(invoice.get("bank_account"))
+                exp_masked = mask_bank_account(vendor.get("bank_account")) if vendor else None
+                description = f"Invoice bank account ({doc_masked}) differs from vendor master on file ({exp_masked})."
+            else:
+                raw_ev = evidence_map.get("ifsc")
+                ev = dict(raw_ev) if raw_ev else None
+                doc_ifsc = invoice.get("ifsc")
+                exp_ifsc = vendor.get("ifsc") if vendor else None
+                description = f"Invoice IFSC code ({doc_ifsc}) differs from vendor master on file ({exp_ifsc})."
+
+        elif code == "tax_type_mismatch":
+            label = "Tax Type Mismatch"
+            description = "Intra-state transactions must charge CGST+SGST; inter-state transactions must charge IGST."
+            target_field = "igst" if (invoice.get("igst") or 0) > 0 else "cgst"
+            ev = evidence_map.get("supplier_gstin") or evidence_map.get(target_field)
+
+        elif code == "totals_mismatch":
+            label = "Totals Calculation Mismatch"
+            description = "Calculated sum of line items and taxes differs from stated invoice total by more than ₹1.00."
+            target_field = "total"
+            ev = evidence_map.get("total")
+
+        elif code == "foreign_currency":
+            label = "Foreign Currency Invoice"
+            description = f"Invoice currency is {invoice.get('currency') or 'non-INR'}, requiring dual human approvals."
+            target_field = "currency"
+            ev = None
+
+        elif code == "suspicious_content":
+            label = "Suspicious Content Detected"
+            description = "Document contains prompt injection, override instructions, or embedded script markup."
+            target_field = "notes"
+            ev = None
+
+        elif code == "processing_error":
+            label = "Document Processing Error"
+            description = "Automated parsing or extraction encountered an unexpected error; manual review required."
+            target_field = "notes"
+            ev = None
+
+        elif code == "line_item_math_error":
+            label = "Line Item Math Error"
+            description = "Calculated line item amount (quantity * unit price) differs from stated line total by more than ₹1.00."
+            target_field = "subtotal"
+            ev = evidence_map.get("subtotal")
+
+        elif code == "future_dated_invoice":
+            label = "Future Dated Invoice"
+            description = "Invoice date is post-dated beyond the document receipt/transmission date."
+            target_field = "invoice_date"
+            ev = evidence_map.get("invoice_date")
+
+        item = {
+            "code": code,
+            "label": label,
+            "description": description,
+            "target_field": target_field,
+        }
+        if ev:
+            item["evidence"] = ev
+        details.append(item)
+
+    return details
