@@ -33,6 +33,8 @@ export default function App() {
   const [invoices, setInvoices] = useState<InvoiceSummary[]>([]);
   const [allInvoices, setAllInvoices] = useState<InvoiceSummary[]>([]);
   const [filter, setFilter] = useState<FilterStatus>("all");
+  const [searchQuery, setSearchQuery] = useState("");
+  const [copiedKey, setCopiedKey] = useState<string | null>(null);
   const [selected, setSelected] = useState<Invoice | null>(null);
   const [activeField, setActiveField] = useState<string | null>(null);
   const [activeEvidence, setActiveEvidence] = useState<EvidenceSpan | null>(null);
@@ -42,6 +44,29 @@ export default function App() {
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   const highlightRef = useRef<HTMLElement | null>(null);
+
+  // Client-side quick search filtering across supplier, invoice number, and ID
+  const filteredInvoices = invoices.filter((inv) => {
+    if (!searchQuery.trim()) return true;
+    const q = searchQuery.toLowerCase().trim();
+    const name = (inv.supplier_name || "").toLowerCase();
+    const num = (inv.invoice_number || "").toLowerCase();
+    const id = String(inv.id);
+    return name.includes(q) || num.includes(q) || id.includes(q);
+  });
+
+  // Quick copy to clipboard with visual confirmation
+  function copyToClipboard(key: string, value: string | number | null | undefined) {
+    if (value === null || value === undefined) return;
+    const text = String(value);
+    if (navigator?.clipboard?.writeText) {
+      navigator.clipboard.writeText(text);
+    }
+    setCopiedKey(key);
+    setTimeout(() => {
+      setCopiedKey((curr) => (curr === key ? null : curr));
+    }, 1800);
+  }
 
   // Load and refresh queue data
   async function refreshQueue() {
@@ -77,7 +102,7 @@ export default function App() {
     }
   }, [activeEvidence]);
 
-  // Keyboard navigation: J / K / Down / Up to navigate queue
+  // Keyboard navigation: J / K / Down / Up to navigate queue, Esc to clear active highlight
   useEffect(() => {
     function handleKeyDown(e: KeyboardEvent) {
       if (
@@ -94,23 +119,27 @@ export default function App() {
       } else if (e.key === "k" || e.key === "ArrowUp") {
         e.preventDefault();
         navigateQueue(-1);
+      } else if (e.key === "Escape") {
+        e.preventDefault();
+        setActiveField(null);
+        setActiveEvidence(null);
       }
     }
 
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [invoices, selected]);
+  }, [filteredInvoices, selected]);
 
   function navigateQueue(delta: number) {
-    if (invoices.length === 0) return;
+    if (filteredInvoices.length === 0) return;
     if (!selected) {
-      open(invoices[0].id);
+      open(filteredInvoices[0].id);
       return;
     }
-    const currentIndex = invoices.findIndex((inv) => inv.id === selected.id);
+    const currentIndex = filteredInvoices.findIndex((inv) => inv.id === selected.id);
     const nextIndex = currentIndex + delta;
-    if (nextIndex >= 0 && nextIndex < invoices.length) {
-      open(invoices[nextIndex].id);
+    if (nextIndex >= 0 && nextIndex < filteredInvoices.length) {
+      open(filteredInvoices[nextIndex].id);
     }
   }
 
@@ -207,9 +236,9 @@ export default function App() {
     rejected: allInvoices.filter((i) => i.status === "rejected").length,
   };
 
-  const currentIndex = selected ? invoices.findIndex((i) => i.id === selected.id) : -1;
+  const currentIndex = selected ? filteredInvoices.findIndex((i) => i.id === selected.id) : -1;
   const hasPrev = currentIndex > 0;
-  const hasNext = currentIndex >= 0 && currentIndex < invoices.length - 1;
+  const hasNext = currentIndex >= 0 && currentIndex < filteredInvoices.length - 1;
 
   // Render document text with evidence highlighting using Unicode offset conversion
   function renderDocumentContent() {
@@ -267,6 +296,26 @@ export default function App() {
                 </button>
               ))}
             </nav>
+            <div className="queue-search-wrap">
+              <input
+                type="search"
+                className="queue-search-input"
+                placeholder="Filter queue by supplier, invoice #, or ID…"
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                aria-label="Filter queue by supplier, invoice, or ID"
+              />
+              {searchQuery && (
+                <button
+                  type="button"
+                  className="search-clear-btn"
+                  onClick={() => setSearchQuery("")}
+                  title="Clear search"
+                >
+                  ✕
+                </button>
+              )}
+            </div>
           </div>
 
           <table>
@@ -279,7 +328,7 @@ export default function App() {
               </tr>
             </thead>
             <tbody>
-              {invoices.map((inv) => (
+              {filteredInvoices.map((inv) => (
                 <tr
                   key={inv.id}
                   onClick={() => open(inv.id)}
@@ -298,8 +347,12 @@ export default function App() {
               ))}
             </tbody>
           </table>
-          {invoices.length === 0 && (
-            <p className="empty">No documents found matching this filter.</p>
+          {filteredInvoices.length === 0 && (
+            <p className="empty">
+              {searchQuery
+                ? `No documents match "${searchQuery}".`
+                : "No documents found matching this filter."}
+            </p>
           )}
         </section>
 
@@ -330,8 +383,8 @@ export default function App() {
                   >
                     Next →
                   </button>
-                  <span className="keyboard-hint" title="Use J/K or Up/Down keys">
-                    [J / K keys]
+                  <span className="keyboard-hint" title="Shortcuts: J/K to navigate queue, Esc to clear highlight">
+                    [J / K keys | Esc]
                   </span>
                 </div>
               </div>
@@ -397,6 +450,19 @@ export default function App() {
                       </span>
                     )}
                   </span>
+                  {selected.supplier_gstin && (
+                    <button
+                      type="button"
+                      className={`copy-btn ${copiedKey === "supplier_gstin" ? "copied" : ""}`}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        copyToClipboard("supplier_gstin", selected.supplier_gstin);
+                      }}
+                      title="Copy GSTIN to clipboard"
+                    >
+                      {copiedKey === "supplier_gstin" ? "✓ Copied" : "Copy"}
+                    </button>
+                  )}
                 </dd>
 
                 <dt>Invoice number</dt>
@@ -412,6 +478,19 @@ export default function App() {
                       </span>
                     )}
                   </span>
+                  {selected.invoice_number && (
+                    <button
+                      type="button"
+                      className={`copy-btn ${copiedKey === "invoice_number" ? "copied" : ""}`}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        copyToClipboard("invoice_number", selected.invoice_number);
+                      }}
+                      title="Copy invoice number to clipboard"
+                    >
+                      {copiedKey === "invoice_number" ? "✓ Copied" : "Copy"}
+                    </button>
+                  )}
                 </dd>
 
                 <dt>Date</dt>
@@ -442,6 +521,19 @@ export default function App() {
                       </span>
                     )}
                   </span>
+                  {selected.po_number && (
+                    <button
+                      type="button"
+                      className={`copy-btn ${copiedKey === "po_number" ? "copied" : ""}`}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        copyToClipboard("po_number", selected.po_number);
+                      }}
+                      title="Copy PO number to clipboard"
+                    >
+                      {copiedKey === "po_number" ? "✓ Copied" : "Copy"}
+                    </button>
+                  )}
                 </dd>
 
                 <dt>Subtotal</dt>
@@ -517,6 +609,19 @@ export default function App() {
                       </span>
                     )}
                   </span>
+                  {selected.total !== null && selected.total !== undefined && (
+                    <button
+                      type="button"
+                      className={`copy-btn ${copiedKey === "total" ? "copied" : ""}`}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        copyToClipboard("total", selected.total);
+                      }}
+                      title="Copy total amount"
+                    >
+                      {copiedKey === "total" ? "✓ Copied" : "Copy"}
+                    </button>
+                  )}
                 </dd>
 
                 <dt>Bank Details</dt>
@@ -533,6 +638,22 @@ export default function App() {
                       </span>
                     )}
                   </span>
+                  {(selected.evidence?.["bank_account"]?.masked_text || selected.bank_account) && (
+                    <button
+                      type="button"
+                      className={`copy-btn ${copiedKey === "bank_account" ? "copied" : ""}`}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        copyToClipboard(
+                          "bank_account",
+                          selected.evidence?.["bank_account"]?.masked_text || selected.bank_account
+                        );
+                      }}
+                      title="Copy bank details"
+                    >
+                      {copiedKey === "bank_account" ? "✓ Copied" : "Copy"}
+                    </button>
+                  )}
                 </dd>
               </dl>
 

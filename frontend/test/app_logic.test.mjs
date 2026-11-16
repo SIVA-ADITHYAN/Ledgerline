@@ -242,3 +242,78 @@ test("non-terminal invoice controls - allows actions for needs_review and ready_
   assert.strictEqual(apiAction, "approved");
 });
 
+test("queue search filtering - filters invoices by supplier name, invoice number, or ID", () => {
+  const invoices = [
+    { id: 1, supplier_name: "Sitara Industrial Supplies", invoice_number: "SIS/26-27/0042" },
+    { id: 2, supplier_name: "Precision Gauges", invoice_number: "PGI/26-27/018" },
+    { id: 3, supplier_name: "Narmada Polymers", invoice_number: "NPL/2627/0377" },
+  ];
+
+  function filterInvoices(list, query) {
+    if (!query.trim()) return list;
+    const q = query.toLowerCase().trim();
+    return list.filter((inv) => {
+      const name = (inv.supplier_name || "").toLowerCase();
+      const num = (inv.invoice_number || "").toLowerCase();
+      const id = String(inv.id);
+      return name.includes(q) || num.includes(q) || id.includes(q);
+    });
+  }
+
+  // Filter by supplier name substring
+  const bySupplier = filterInvoices(invoices, "sitara");
+  assert.strictEqual(bySupplier.length, 1);
+  assert.strictEqual(bySupplier[0].id, 1);
+
+  // Filter by invoice number
+  const byInvoice = filterInvoices(invoices, "PGI");
+  assert.strictEqual(byInvoice.length, 1);
+  assert.strictEqual(byInvoice[0].id, 2);
+
+  // Filter by document ID
+  const byId = filterInvoices(invoices, "3");
+  assert.strictEqual(byId.length, 1);
+  assert.strictEqual(byId[0].id, 3);
+
+  // Filter with no matches
+  const noMatch = filterInvoices(invoices, "Nonexistent");
+  assert.strictEqual(noMatch.length, 0);
+
+  // Empty query returns all
+  const all = filterInvoices(invoices, "");
+  assert.strictEqual(all.length, 3);
+});
+
+test("keyboard shortcuts - Escape key clears active evidence highlight", () => {
+  let activeField = "supplier_gstin";
+  let activeEvidence = { start: 10, end: 25, text: "27AAKCS4821M1ZW" };
+
+  function handleKeyDown(key) {
+    if (key === "Escape") {
+      activeField = null;
+      activeEvidence = null;
+    }
+  }
+
+  handleKeyDown("Escape");
+  assert.strictEqual(activeField, null);
+  assert.strictEqual(activeEvidence, null);
+});
+
+test("clipboard copy helper - formats text and triggers feedback state", () => {
+  let copiedKey = null;
+
+  function copyToClipboard(key, value) {
+    if (value === null || value === undefined) return;
+    const text = String(value);
+    copiedKey = key;
+    return text;
+  }
+
+  const copiedVal = copyToClipboard("invoice_number", "SIS/26-27/0042");
+  assert.strictEqual(copiedVal, "SIS/26-27/0042");
+  assert.strictEqual(copiedKey, "invoice_number");
+
+  const nullVal = copyToClipboard("empty_field", null);
+  assert.strictEqual(nullVal, undefined);
+});

@@ -34,6 +34,10 @@ Option A directly solves this adoption crisis:
 - **Review Reason Cards:** Each review reason card features an active navigation button that jumps directly to the conflicting evidence (e.g. invalid GSTIN or mismatched line item).
 - **Unicode Coordinate Integrity:** Implemented `pyCodePointToJsUtf16Offset` to resolve the disparity between Python's Unicode code points and JavaScript's UTF-16 code units, ensuring pixel-perfect highlight slicing even on documents with emojis or non-BMP symbols.
 - **Privacy-Preserving Rendering:** The document viewer and field panels display masked bank accounts while preserving character offsets, guaranteeing zero data leaks in the DOM.
+- **Power-Reviewer Ergonomics (150 Invoices/Day):**
+  - **Keyboard Navigation:** `j` / `k` (or arrow keys) for rapid invoice switching and `Esc` to instantly clear active highlights.
+  - **Real-Time Queue Search:** Instant client-side search filtering by supplier name, invoice number, or document ID.
+  - **One-Click Field Copying:** Integrated copy-to-clipboard action with visual toast feedback for rapid ERP/accounting reconciliation.
 
 By transforming review from a 3-minute manual cross-referencing ordeal into a 10-second visual verification, Option A restores team trust and unlocks the speed necessary to maintain Meridian's 45-day MSME payment cycle.
 
